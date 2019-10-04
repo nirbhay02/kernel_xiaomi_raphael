@@ -887,6 +887,11 @@ static int devfreq_bw_hwmon_ev_handler(struct devfreq *df,
 		 * is happening.
 		 */
 		hw = node->hw;
+
+		mutex_lock(&node->mon_lock);
+		node->mon_started = false;
+		mutex_unlock(&node->mon_lock);
+
 		hw->suspend_hwmon(hw);
 		devfreq_interval_update(df, &sample_ms);
 		ret = hw->resume_hwmon(hw);
@@ -895,6 +900,9 @@ static int devfreq_bw_hwmon_ev_handler(struct devfreq *df,
 				"Unable to resume HW monitor (%d)\n", ret);
 			goto out;
 		}
+		mutex_lock(&node->mon_lock);
+		node->mon_started = true;
+		mutex_unlock(&node->mon_lock);
 		break;
 
 	case DEVFREQ_GOV_SUSPEND:
