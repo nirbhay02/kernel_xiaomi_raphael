@@ -600,7 +600,7 @@ static int cpufreq_set_min_state(struct thermal_cooling_device *cdev,
 	unsigned int floor_freq;
 
 	if (state > cpufreq_cdev->max_level)
-		state = cpufreq_cdev->max_level;
+		return -EINVAL;
 
 	if (cpufreq_cdev->cpufreq_floor_state == state)
 		return 0;
