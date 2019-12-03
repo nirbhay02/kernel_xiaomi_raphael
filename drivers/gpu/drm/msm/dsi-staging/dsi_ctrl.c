@@ -845,7 +845,7 @@ static int dsi_ctrl_update_link_freqs(struct dsi_ctrl *dsi_ctrl,
 {
 	int rc = 0;
 	u32 num_of_lanes = 0;
-	u32 bpp, frame_time_us;
+	u32 bpp, frame_time_us, byte_intf_clk_div;
 	u64 h_period, v_period, bit_rate, pclk_rate, bit_rate_per_lane,
 				byte_clk_rate, byte_intf_clk_rate;
 	struct dsi_host_common_cfg *host_cfg = &config->common_config;
@@ -895,7 +895,8 @@ static int dsi_ctrl_update_link_freqs(struct dsi_ctrl *dsi_ctrl,
 		byte_clk_rate = bit_rate_per_lane;
 		do_div(byte_clk_rate, 8);
 		byte_intf_clk_rate = byte_clk_rate;
-		do_div(byte_intf_clk_rate, 2);
+		byte_intf_clk_div = host_cfg->byte_intf_clk_div;
+		do_div(byte_intf_clk_rate, byte_intf_clk_div);
 		config->bit_clk_rate_hz = byte_clk_rate * 8;
 	} else {
 		do_div(bit_rate, bits_per_symbol);

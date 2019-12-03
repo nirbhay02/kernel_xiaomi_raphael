@@ -537,6 +537,7 @@ struct dsi_split_link_config {
  * @force_hs_clk_lane:   Send continuous clock to the panel.
  * @phy_type:            DPHY/CPHY is enabled for this panel.
  * @dsi_split_link_config:  Split Link Configuration.
+ * @byte_intf_clk_div:   Determines the factor for calculating byte intf clock.
  */
 struct dsi_host_common_cfg {
 	enum dsi_pixel_format dst_format;
@@ -563,6 +564,7 @@ struct dsi_host_common_cfg {
 	bool force_hs_clk_lane;
 	enum dsi_phy_type phy_type;
 	struct dsi_split_link_config split_link;
+	u32 byte_intf_clk_div;
 };
 
 /**

@@ -4150,6 +4150,22 @@ static bool dsi_display_is_seamless_dfps_possible(
 	return true;
 }
 
+void dsi_display_update_byte_intf_div(struct dsi_display *display)
+{
+	struct dsi_host_common_cfg *config;
+	struct dsi_display_ctrl *m_ctrl;
+	int phy_ver;
+
+	m_ctrl = &display->ctrl[display->cmd_master_idx];
+	config = &display->panel->host_config;
+
+	phy_ver = dsi_phy_get_version(m_ctrl->phy);
+	if (phy_ver <= DSI_PHY_VERSION_2_0)
+		config->byte_intf_clk_div = 1;
+	else
+		config->byte_intf_clk_div = 2;
+}
+
 static int dsi_display_update_dsi_bitrate(struct dsi_display *display,
 					  u32 bit_clk_rate)
 {
@@ -4172,7 +4188,7 @@ static int dsi_display_update_dsi_bitrate(struct dsi_display *display,
 	display_for_each_ctrl(i, display) {
 		struct dsi_display_ctrl *dsi_disp_ctrl = &display->ctrl[i];
 		struct dsi_ctrl *ctrl = dsi_disp_ctrl->ctrl;
-		u32 num_of_lanes = 0, bpp;
+		u32 num_of_lanes = 0, bpp, byte_intf_clk_div;
 		u64 bit_rate, pclk_rate, bit_rate_per_lane, byte_clk_rate,
 						byte_intf_clk_rate;
 		u32 bits_per_symbol = 16, num_of_symbols = 7; /* For Cphy */
@@ -4208,7 +4224,8 @@ static int dsi_display_update_dsi_bitrate(struct dsi_display *display,
 			byte_clk_rate = bit_rate_per_lane;
 			do_div(byte_clk_rate, 8);
 			byte_intf_clk_rate = byte_clk_rate;
-			do_div(byte_intf_clk_rate, 2);
+			byte_intf_clk_div = host_cfg->byte_intf_clk_div;
+			do_div(byte_intf_clk_rate, byte_intf_clk_div);
 		} else {
 			bit_rate_per_lane = bit_clk_rate;
 			pclk_rate *= bits_per_symbol;
@@ -5462,6 +5479,7 @@ static int dsi_display_bind(struct device *dev,
 		}
 	}
 
+	dsi_display_update_byte_intf_div(display);
 	rc = dsi_display_mipi_host_init(display);
 	if (rc) {
 		pr_err("[%s] failed to initialize mipi host, rc=%d\n",
