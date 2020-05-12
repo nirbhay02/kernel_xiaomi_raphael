@@ -444,16 +444,6 @@ static int gdsc_disable(struct regulator_dev *rdev)
 	uint32_t regval;
 	int i, ret = 0;
 
-	/*
-	 * Protect GDSC against late_init disabling when the GDSC is enabled
-	 * by an entity outside external to HLOS.
-	 */
-	if (sc->skip_disable_before_enable) {
-		dev_dbg(&rdev->dev, "Skip Disabling: %s\n", sc->rdesc.name);
-		sc->skip_disable_before_enable = false;
-		return 0;
-	}
-
 	if (sc->force_root_en)
 		clk_prepare_enable(sc->clocks[sc->root_clk_idx]);
 
