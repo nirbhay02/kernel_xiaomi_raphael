@@ -3,7 +3,7 @@
  * Core layer of touchdriver architecture.
  *
  * Copyright (C) 2015 - 2016 Goodix, Inc.
- * Copyright (C) 2019 XiaoMi, Inc.
+ * Copyright (C) 2020 XiaoMi, Inc.
  * Authors:  Yulong Cai <caiyulong@goodix.com>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -468,6 +468,10 @@ struct goodix_ts_core {
 	struct notifier_block power_supply_notifier;
 	struct notifier_block bl_notifier;
 	struct workqueue_struct *event_wq;
+	struct workqueue_struct *touch_feature_wq;
+	struct work_struct cmd_update_work;
+	struct work_struct aod_set_work;
+	struct work_struct fod_set_work;
 	struct work_struct suspend_work;
 	struct work_struct resume_work;
 	struct work_struct power_supply_work;
