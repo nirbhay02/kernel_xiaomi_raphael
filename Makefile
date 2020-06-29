@@ -437,6 +437,10 @@ export RCS_FIND_IGNORE := \( -name SCCS -o -name BitKeeper -o -name .svn -o    \
 export RCS_TAR_IGNORE := --exclude SCCS --exclude BitKeeper --exclude .svn \
 			 --exclude CVS --exclude .pc --exclude .hg --exclude .git
 
+# Make the goddamn audio work
+TARGET_PRODUCT := grus
+export TARGET_PRODUCT
+
 # ===========================================================================
 # Rules shared between *config targets and build targets
 
