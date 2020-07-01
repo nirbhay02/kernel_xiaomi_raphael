@@ -70,6 +70,7 @@ struct hwmon_node {
 	ktime_t hist_max_ts;
 	bool sampled;
 	bool mon_started;
+	bool init_pending;
 	struct list_head list;
 	void *orig_data;
 	struct bw_hwmon *hw;
@@ -547,8 +548,15 @@ static int start_monitor(struct devfreq *df, bool init)
 	unsigned long mbps;
 	int ret;
 
-	node->prev_ts = ktime_get();
+	if (init && df->dev_suspended) {
+		node->init_pending = true;
+		return 0;
+	} else if (!init && node->init_pending) {
+		init = true;
+		node->init_pending = false;
+	}
 
+	node->prev_ts = ktime_get();
 	if (init) {
 		node->prev_ab = 0;
 		node->resume_freq = 0;
@@ -588,7 +596,8 @@ static void stop_monitor(struct devfreq *df, bool init)
 
 	if (init) {
 		devfreq_monitor_stop(df);
-		hw->stop_hwmon(hw);
+		if (!df->dev_suspended)
+			hw->stop_hwmon(hw);
 	} else {
 		devfreq_monitor_suspend(df);
 		hw->suspend_hwmon(hw);
@@ -713,7 +722,7 @@ static int devfreq_bw_hwmon_get_freq(struct devfreq *df,
 	struct hwmon_node *node = df->data;
 
 	/* Suspend/resume sequence */
-	if (node && !node->mon_started) {
+	if ((node && !node->mon_started) || df->dev_suspended) {
 		*freq = node->resume_freq;
 		*node->dev_ab = node->resume_ab;
 		return 0;
@@ -801,7 +810,7 @@ static DEVICE_ATTR_RW(sample_ms);
 
 gov_attr(guard_band_mbps, 0U, 2000U);
 gov_attr(decay_rate, 0U, 100U);
-gov_attr(io_percent, 1U, 100U);
+gov_attr(io_percent, 1U, 400U);
 gov_attr(bw_step, 50U, 1000U);
 gov_attr(up_scale, 0U, 500U);
 gov_attr(up_thres, 1U, 100U);
@@ -887,6 +896,15 @@ static int devfreq_bw_hwmon_ev_handler(struct devfreq *df,
 		 * is happening.
 		 */
 		hw = node->hw;
+
+		if (!node->mon_started || df->dev_suspended) {
+			devfreq_interval_update(df, &sample_ms);
+			break;
+		}
+		mutex_lock(&node->mon_lock);
+		node->mon_started = false;
+		mutex_unlock(&node->mon_lock);
+
 		hw->suspend_hwmon(hw);
 		devfreq_interval_update(df, &sample_ms);
 		ret = hw->resume_hwmon(hw);
@@ -895,6 +913,9 @@ static int devfreq_bw_hwmon_ev_handler(struct devfreq *df,
 				"Unable to resume HW monitor (%d)\n", ret);
 			goto out;
 		}
+		mutex_lock(&node->mon_lock);
+		node->mon_started = true;
+		mutex_unlock(&node->mon_lock);
 		break;
 
 	case DEVFREQ_GOV_SUSPEND:

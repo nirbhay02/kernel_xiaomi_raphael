@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -127,6 +127,9 @@ static int reg_get_cur_state(struct thermal_cooling_device *cdev,
 static int reg_send_cur_state(struct thermal_cooling_device *cdev,
 				unsigned long state)
 {
+	if (state > REG_CDEV_MAX_STATE)
+		return -EINVAL;
+
 	return 0;
 }
 
