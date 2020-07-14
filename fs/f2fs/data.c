@@ -968,12 +968,13 @@ static void f2fs_release_read_bio(struct bio *bio)
 
 /* This can handle encryption stuffs */
 static int f2fs_submit_page_read(struct inode *inode, struct page *page,
-						block_t blkaddr, bool for_write)
+				 block_t blkaddr, int op_flags, bool for_write)
 {
 	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
 	struct bio *bio;
 
-	bio = f2fs_grab_read_bio(inode, blkaddr, 1, 0, for_write);
+	bio = f2fs_grab_read_bio(inode, blkaddr, 1, op_flags,
+					for_write);
 	if (IS_ERR(bio))
 		return PTR_ERR(bio);
 
@@ -1163,7 +1164,8 @@ got_it:
 		return page;
 	}
 
-	err = f2fs_submit_page_read(inode, page, dn.data_blkaddr, for_write);
+	err = f2fs_submit_page_read(inode, page, dn.data_blkaddr,
+						op_flags, for_write);
 	if (err)
 		goto put_err;
 	return page;
@@ -3100,7 +3102,7 @@ static int __f2fs_write_data_pages(struct address_space *mapping,
 	if (unlikely(is_sbi_flag_set(sbi, SBI_POR_DOING)))
 		goto skip_write;
 
-	if ((S_ISDIR(inode->i_mode) || IS_NOQUOTA(inode)) &&
+	if (S_ISDIR(inode->i_mode) &&
 			wbc->sync_mode == WB_SYNC_NONE &&
 			get_dirty_pages(inode) < nr_pages_to_skip(sbi, DATA) &&
 			f2fs_available_free_memory(sbi, DIRTY_DENTS))
@@ -3369,7 +3371,7 @@ repeat:
 			err = -EFSCORRUPTED;
 			goto fail;
 		}
-		err = f2fs_submit_page_read(inode, page, blkaddr, true);
+		err = f2fs_submit_page_read(inode, page, blkaddr, 0, true);
 		if (err)
 			goto fail;
 
