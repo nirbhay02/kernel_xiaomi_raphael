@@ -26,7 +26,6 @@
 #include <linux/interrupt.h>
 #include "goodix_ts_core.h"
 #include "goodix_cfg_bin.h"
-#include "../xiaomi/xiaomi_touch.h"
 #include <linux/input/mt.h>
 #include <linux/input.h>
 
@@ -594,33 +593,19 @@ int goodix_i2c_write(struct goodix_ts_device *dev, unsigned int reg,
 		unsigned char *data, unsigned int len)
 {
 	int r;
-	int retry = 1;
 
 	if (dev->ic_type == IC_TYPE_NORMANDY) {
-		while ((r = goodix_set_i2c_doze_mode(dev, false)) != 0) {
-			if (retry > 0) {
-				ts_err("disable doze mode failed, retry");
-				--retry;
-			} else {
-				ts_err("gtx8 i2c write:0x%04x ERROR, disable doze mode FAILED",
+		if (goodix_set_i2c_doze_mode(dev, false) != 0)
+			ts_err("gtx8 i2c write:0x%04x ERROR, disable doze mode FAILED",
 					reg);
-			}
-		}
 	}
 
 	r = goodix_i2c_write_trans(dev, reg, data, len);
 
-	retry = 1;
 	if (dev->ic_type == IC_TYPE_NORMANDY) {
-		while ((r = goodix_set_i2c_doze_mode(dev, true)) != 0) {
-			if (retry > 0) {
-				ts_err("enable doze mode failed, retry");
-				--retry;
-			} else {
-				ts_err("gtx8 i2c write:0x%04x ERROR, disable doze mode FAILED",
+		if (goodix_set_i2c_doze_mode(dev, true) != 0)
+			ts_err("gtx8 i2c write:0x%04x ERROR, enable doze mode FAILED",
 					reg);
-			}
-		}
 	}
 	return r;
 }
@@ -1487,7 +1472,12 @@ int goodix_hw_reset(struct goodix_ts_device *dev)
 	int r = 0;
 
 	ts_info("HW reset");
+	ts_info("ic_type = %d\n", dev->ic_type);
+	dev->ic_type = IC_TYPE_NORMANDY;
 	if (dev->ic_type == IC_TYPE_NORMANDY) {
+		ts_info("touchpanel normandy reset");
+		//gpio_direction_output(dev->board_data->reset_gpio, 1);
+		//msleep(10);
 		gpio_direction_output(dev->board_data->reset_gpio, 0);
 		udelay(2000);
 		gpio_direction_output(dev->board_data->reset_gpio, 1);
@@ -1548,6 +1538,10 @@ static int goodix_request_handler(struct goodix_ts_device *dev,
 	unsigned char buffer[1];
 	int r;
 
+	if (dev->reg.fw_request != 0x6F6D){
+		ts_info("firmware reg is wrong!\n");
+		dev->reg.fw_request = 0x6F6D;
+	}
 	r = goodix_i2c_read_trans(dev, dev->reg.fw_request, buffer, 1);/*TS_REG_REQUEST*/
 	if (r < 0)
 		return r;
@@ -1846,8 +1840,9 @@ static int goodix_touch_handler(struct goodix_ts_device *dev,
 							(buffer[i * BYTES_PER_COORD + 4] << 8);
 			coords->y = buffer[i * BYTES_PER_COORD + 5] |
 							(buffer[i * BYTES_PER_COORD + 6] << 8);
-			coords->w = buffer[i * BYTES_PER_COORD + 7];
-			coords->p = coords->w;
+			coords->w = coords->p / 16;
+			coords->p = buffer[i * BYTES_PER_COORD + 7] |
+			(buffer[i * BYTES_PER_COORD + 8] << 8);
 			coords->overlapping_area = buffer[8];
 			coords->area = buffer[i * BYTES_PER_COORD + 9];
 			coords++;
@@ -1867,8 +1862,10 @@ static int goodix_touch_handler(struct goodix_ts_device *dev,
 					(buffer[i * BYTES_PER_COORD + 4] << 8);
 				touch_data->pen_coords[0].y = buffer[i * BYTES_PER_COORD + 5] |
 					(buffer[i * BYTES_PER_COORD + 6] << 8);
-				touch_data->pen_coords[0].w = buffer[i * BYTES_PER_COORD + 7];
-				touch_data->pen_coords[0].p = touch_data->pen_coords[0].w;
+				touch_data->pen_coords[0].w = 6;
+				touch_data->pen_coords[0].p =
+					buffer[i * BYTES_PER_COORD + 7] |
+					(buffer[i * BYTES_PER_COORD + 8] << 8);
 				}
 			} else {/*it's a finger*/
 					coords->id = buffer[i * BYTES_PER_COORD + 2] & 0x0f;
@@ -1876,8 +1873,9 @@ static int goodix_touch_handler(struct goodix_ts_device *dev,
 									(buffer[i * BYTES_PER_COORD + 4] << 8);
 					coords->y = buffer[i * BYTES_PER_COORD + 5] |
 									(buffer[i * BYTES_PER_COORD + 6] << 8);
-					coords->w = buffer[i * BYTES_PER_COORD + 7];
-					coords->p = coords->w;
+					coords->w = coords->p / 16;
+					coords->p = buffer[i * BYTES_PER_COORD + 7] |
+							(buffer[i * BYTES_PER_COORD + 8] << 8);
 					coords->overlapping_area = buffer[8];
 					coords->area = buffer[i * BYTES_PER_COORD + 9];
 					/*ts_debug("EF:[%d](%d, %d)", coords->id, coords->x, coords->y);*/
@@ -1899,8 +1897,8 @@ static int goodix_touch_handler(struct goodix_ts_device *dev,
 
 exit_clean_sta:
 	/* handshake */
-	buffer[0] = 0x00;
-	goodix_i2c_write_trans(dev, dev->reg.coor, buffer, 1);
+	/*buffer[0] = 0x00;*/
+	/*goodix_i2c_write_trans(dev, dev->reg.coor, buffer, 1);*/
 	return r;
 }
 
@@ -1911,9 +1909,9 @@ static int goodix_event_handler(struct goodix_ts_device *dev,
 	unsigned char event_sta;
 	struct i2c_client *client = to_i2c_client(dev->dev);
 	struct goodix_ts_core *core_data = i2c_get_clientdata(client);
-	int r, ispalm = 0;
+	int r;
 
-	memset(pre_buf, 0, sizeof(pre_buf));
+	/*memset(pre_buf, 0, sizeof(pre_buf));*/
 
 	r = goodix_i2c_read_trans(dev, dev->reg.coor,
 			pre_buf, 4 + BYTES_PER_COORD);
@@ -1924,16 +1922,6 @@ static int goodix_event_handler(struct goodix_ts_device *dev,
 	core_data->event_status = pre_buf[0];
 	event_sta = pre_buf[0];
 
-	ispalm = pre_buf[1] & 0x20;
-#ifdef CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE
-	if (core_data->palm_sensor_switch) {
-		if (ispalm)
-			update_palm_sensor_value(1);
-		else
-			update_palm_sensor_value(0);
-		ts_info("palm event:%d", !!ispalm);
-	}
-#endif
 	if (likely((event_sta & GOODIX_TOUCH_EVENT) == GOODIX_TOUCH_EVENT)) {
 		/*handle touch event*/
 		goodix_touch_handler(dev,

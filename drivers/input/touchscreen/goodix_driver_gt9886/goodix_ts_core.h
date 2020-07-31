@@ -3,7 +3,7 @@
  * Core layer of touchdriver architecture.
  *
  * Copyright (C) 2015 - 2016 Goodix, Inc.
- * Copyright (C) 2020 XiaoMi, Inc.
+ * Copyright (C) 2019 XiaoMi, Inc.
  * Authors:  Yulong Cai <caiyulong@goodix.com>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -78,7 +78,6 @@
 #define GOODIX_REQUEST_EVENT		0x40
 #define GOODIX_GESTURE_EVENT		0x20
 #define GOODIX_HOTKNOT_EVENT		0x10
-#define GOODIX_LOCKDOWN_SIZE		8
 
 #define CENTER_X					540
 #define CENTER_Y					2030
@@ -441,7 +440,6 @@ struct goodix_ts_core {
 	unsigned long sleep_finger;
 	unsigned long event_status;
 	unsigned int avdd_load;
-	unsigned char lockdown_info[GOODIX_LOCKDOWN_SIZE];
 
 	int power_on;
 	int irq;
@@ -459,7 +457,6 @@ struct goodix_ts_core {
 	struct proc_dir_entry *tp_selftest_proc;
 	struct proc_dir_entry *tp_data_dump_proc;
 	struct proc_dir_entry *tp_fw_version_proc;
-	struct proc_dir_entry *tp_lockdown_info_proc;
 #ifdef CONFIG_DRM
 	struct notifier_block msm_drm_notifier;
 #elif defined(CONFIG_HAS_EARLYSUSPEND)
@@ -468,10 +465,6 @@ struct goodix_ts_core {
 	struct notifier_block power_supply_notifier;
 	struct notifier_block bl_notifier;
 	struct workqueue_struct *event_wq;
-	struct workqueue_struct *touch_feature_wq;
-	struct work_struct cmd_update_work;
-	struct work_struct aod_set_work;
-	struct work_struct fod_set_work;
 	struct work_struct suspend_work;
 	struct work_struct resume_work;
 	struct work_struct power_supply_work;
@@ -781,7 +774,6 @@ int goodix_gesture_enable(bool enable);
 
 int goodix_check_gesture_stat(bool enable);
 
-int goodix_get_lockdowninfo(struct goodix_ts_core *ts_core);
 extern int sync_read_rawdata(unsigned int reg,
 		unsigned char *data, unsigned int len);
 extern int goodix_tools_register(void);
