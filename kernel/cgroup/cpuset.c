@@ -1768,7 +1768,7 @@ out_unlock:
 	return retval ?: nbytes;
 }
 
-/*
+/**
  * These ascii lists should be read in a single call, by using a user
  * buffer large enough to hold the entire map.  If read in smaller
  * chunks, there is no guarantee of atomicity.  Since the display format

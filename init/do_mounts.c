@@ -42,7 +42,6 @@ int root_mountflags = MS_RDONLY | MS_SILENT;
 static char * __initdata root_device_name;
 static char __initdata saved_root_name[64] = "PARTLABEL=system";
 static int root_wait;
-
 dev_t ROOT_DEV;
 
 static int __init load_ramdisk(char *str)
@@ -661,6 +660,7 @@ void __init prepare_namespace(void)
 
 	md_run_setup();
 	dm_run_setup();
+	dm_verity_setup();
 
 	// Try to mount partition labeled "system" first
 	ROOT_DEV = name_to_dev_t("PARTLABEL=system");
@@ -668,6 +668,9 @@ void __init prepare_namespace(void)
 		pr_info("system partition found, mounting it directly to /\n");
 		goto mount;
 	}
+
+		if (initrd_load())
+			goto out;
 
 	if (saved_root_name[0]) {
 		root_device_name = saved_root_name;
@@ -695,9 +698,6 @@ void __init prepare_namespace(void)
 	}
 
 	is_floppy = MAJOR(ROOT_DEV) == FLOPPY_MAJOR;
-
-	if (is_floppy && rd_doload && rd_load_disk(0))
-		ROOT_DEV = Root_RAM0;
 
 mount:
 	mount_root();

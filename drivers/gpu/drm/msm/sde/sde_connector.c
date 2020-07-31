@@ -800,7 +800,7 @@ int sde_connector_update_hbm(struct sde_connector *c_conn)
 			}
 		}
 	}
-	pr_debug("dim_layer_status:%d hbm_enabled:%d\n", dim_layer_status, dsi_display->panel->fod_dimlayer_hbm_enabled);
+	pr_debug("dim_layer_status:%d fod_dimlayer_hbm_enabled:%d\n", dim_layer_status, dsi_display->panel->fod_dimlayer_hbm_enabled);
 	return 0;
 }
 
@@ -1279,16 +1279,16 @@ static int _sde_connector_set_ext_hdr_info(
 
 	connector = &c_conn->base;
 
-	if (!connector->hdr_supported) {
-		SDE_ERROR_CONN(c_conn, "sink doesn't support HDR\n");
-		rc = -ENOTSUPP;
-		goto end;
-	}
-
 	memset(&c_state->hdr_meta, 0, sizeof(c_state->hdr_meta));
 
 	if (!usr_ptr) {
 		SDE_DEBUG_CONN(c_conn, "hdr metadata cleared\n");
+		goto end;
+	}
+
+	if (!connector->hdr_supported) {
+		SDE_ERROR_CONN(c_conn, "sink doesn't support HDR\n");
+		rc = -ENOTSUPP;
 		goto end;
 	}
 
