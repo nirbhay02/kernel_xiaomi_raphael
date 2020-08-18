@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
- * Copyright (C) 2019 XiaoMi, Inc.
+ * Copyright (C) 2020 XiaoMi, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -61,13 +61,19 @@ static const struct of_device_id dsi_display_dt_match[] = {
 	{}
 };
 
+struct dsi_display *dim_display;
+struct dsi_display *get_primary_display(void)
+{
+	return dim_display;
+}
+
+EXPORT_SYMBOL(get_primary_display);
+
 static struct dsi_display *primary_display;
 static struct dsi_display *secondary_display;
 
 int dsi_display_write_panel(struct dsi_panel *panel,
 				struct dsi_panel_cmd_set *cmd_sets);
-
-static void dsi_display_ctrl_irq_update(struct dsi_display *display, bool en);
 
 static void dsi_display_mask_ctrl_error_interrupts(struct dsi_display *display,
 			u32 mask, bool enable)
@@ -122,6 +128,8 @@ static void dsi_display_ctrl_irq_update(struct dsi_display *display, bool en)
 	}
 }
 
+static void dsi_display_ctrl_irq_update(struct dsi_display *display, bool en);
+
 void dsi_rect_intersect(const struct dsi_rect *r1,
 		const struct dsi_rect *r2,
 		struct dsi_rect *result)
@@ -161,9 +169,9 @@ int dsi_display_set_backlight(void *display, u32 bl_lvl)
 	panel = dsi_display->panel;
 	drm_dev = dsi_display->drm_dev;
 
+	mutex_lock(&panel->panel_lock);
 	panel->bl_config.bl_level = bl_lvl;
 
-	mutex_lock(&panel->panel_lock);
 	if (!dsi_panel_initialized(panel)) {
 		pr_info("[%s] set backlight before panel initialized, caching value: %d\n",
 		dsi_display->name, bl_lvl);
@@ -177,7 +185,7 @@ int dsi_display_set_backlight(void *display, u32 bl_lvl)
 	bl_scale_ad = panel->bl_config.bl_scale_ad;
 	/*bl_temp = (u32)bl_temp * bl_scale_ad / MAX_AD_BL_SCALE_LEVEL;*/
 
-	pr_debug("bl_scale = %u, bl_scale_ad = %u, bl_lvl = %u\n",
+	pr_info("bl_scale = %u, bl_scale_ad = %u, bl_lvl = %u\n",
 		bl_scale, bl_scale_ad, (u32)bl_temp);
 
 	rc = dsi_display_clk_ctrl(dsi_display->dsi_clk_handle,
@@ -188,21 +196,11 @@ int dsi_display_set_backlight(void *display, u32 bl_lvl)
 		goto error;
 	}
 
-	if (drm_dev && (drm_dev->state == DRM_BLANK_LP1 || drm_dev->state == DRM_BLANK_LP2)) {
-		rc = dsi_panel_set_doze_backlight(display, (u32)bl_temp);
-		if (rc)
-			pr_err("unable to set doze backlight\n");
-
-		rc = dsi_panel_enable_doze_backlight(panel, (u32)bl_temp);
-		if (rc)
-			pr_err("unable to enable doze backlight\n");
-	} else {
-		drm_dev->doze_brightness = DOZE_BRIGHTNESS_INVALID;
-		rc = dsi_panel_set_backlight(panel, (u32)bl_temp);
-		if (rc)
-			pr_err("unable to set backlight\n");
-	}
-
+	rc = dsi_panel_set_backlight(panel, (u32)bl_temp);
+	if (rc)
+		pr_err("unable to set backlight\n");
+	else
+		pr_info("set backlight successfully at: bl_scale = %u, bl_scale_ad = %u, bl_lvl = %u\n", bl_scale, bl_scale_ad, (u32)bl_temp);
 	rc = dsi_display_clk_ctrl(dsi_display->dsi_clk_handle,
 			DSI_CORE_CLK, DSI_CLK_OFF);
 	if (rc) {
@@ -714,6 +712,9 @@ static int dsi_display_status_reg_read(struct dsi_display *display)
 		}
 	}
 exit:
+	if (rc <= 0)
+		dsi_display_ctrl_irq_update(display, false);
+
 	dsi_display_cmd_engine_disable(display);
 done:
 	return rc;
@@ -1199,10 +1200,16 @@ int dsi_display_set_power(struct drm_connector *connector,
 
 	switch (power_mode) {
 	case SDE_MODE_DPMS_LP1:
+		drm_notifier_call_chain(DRM_EARLY_EVENT_BLANK, &g_notify_data);
 		rc = dsi_panel_set_lp1(display->panel);
+		if (!rc)
+			dsi_panel_set_doze_backlight(display);
+		drm_notifier_call_chain(DRM_EVENT_BLANK, &g_notify_data);
 		break;
 	case SDE_MODE_DPMS_LP2:
+		drm_notifier_call_chain(DRM_EARLY_EVENT_BLANK, &g_notify_data);
 		rc = dsi_panel_set_lp2(display->panel);
+		drm_notifier_call_chain(DRM_EVENT_BLANK, &g_notify_data);
 		break;
 	default:
 		if (dev->pre_state != SDE_MODE_DPMS_LP1 &&
@@ -4642,7 +4649,7 @@ int dsi_display_cont_splash_config(void *dsi_display)
 	}
 
 	/* Continuous splash not supported by external bridge */
-	if (!display || dsi_display_has_ext_bridge(display)) {
+	if (dsi_display_has_ext_bridge(display)) {
 		display->is_cont_splash_enabled = false;
 		return 0;
 	}
@@ -5288,8 +5295,8 @@ int dsi_display_dev_probe(struct platform_device *pdev)
 		 */
 		pr_debug("cmdline primary dsi: %s\n", display->name);
 		display->is_active = true;
-		display->is_prim_display = true;
 		display->is_first_boot = true;
+		display->is_prim_display = true;
 		dsi_display_parse_cmdline_topology(display, DSI_PRIMARY);
 		primary_np = pdev->dev.of_node;
 	}
@@ -5310,14 +5317,6 @@ int dsi_display_dev_probe(struct platform_device *pdev)
 				secondary_active_node = NULL;
 				pr_debug("removed the existing comp ops\n");
 			}
-			/*
-			 * Need to add component for
-			 * the secondary DSI display
-			 * when more than one DSI display
-			 * is supported.
-			 */
-			pr_debug("cmdline primary dsi: %s\n",
-						display->name);
 			display->is_active = true;
 			dsi_display_parse_cmdline_topology(display,
 					DSI_SECONDARY);
@@ -5906,6 +5905,7 @@ int dsi_display_get_modes(struct dsi_display *display,
 exit:
 	*out_modes = display->modes;
 	rc = 0;
+	dim_display = display;
 
 error:
 	if (rc)
@@ -6903,6 +6903,18 @@ int dsi_display_enable(struct dsi_display *display)
 						= display->panel->elvss_dimming_cmds.rbuf[0];
 			pr_info("fod hbm off cmds change to %x\n",
 				((u8 *)display->panel->cur_mode->priv_info->cmd_sets[DSI_CMD_SET_DISP_HBM_FOD_OFF].cmds[6].msg.tx_buf)[1]);
+
+			((u8 *)display->panel->cur_mode->priv_info->cmd_sets[DSI_CMD_SET_DISP_HBM_FOD_OFF_DOZE_HBM_ON].cmds[6].msg.tx_buf)[1]
+						= (display->panel->elvss_dimming_cmds.rbuf[0]);
+			pr_info("fod hbm off doze hbm on cmds change to %x\n",
+				((u8 *)display->panel->cur_mode->priv_info->cmd_sets[DSI_CMD_SET_DISP_HBM_FOD_OFF_DOZE_HBM_ON].cmds[6].msg.tx_buf)[1]);
+
+			((u8 *)display->panel->cur_mode->priv_info->cmd_sets[DSI_CMD_SET_DISP_HBM_FOD_OFF_DOZE_LBM_ON].cmds[6].msg.tx_buf)[1]
+						= display->panel->elvss_dimming_cmds.rbuf[0];
+			pr_info("fod hbm off doze lbm on cmds change to  %x\n",
+				((u8 *)display->panel->cur_mode->priv_info->cmd_sets[DSI_CMD_SET_DISP_HBM_FOD_OFF_DOZE_LBM_ON].cmds[6].msg.tx_buf)[1]);
+
+
 		}
 
 		dsi_panel_release_panel_lock(display->panel);
