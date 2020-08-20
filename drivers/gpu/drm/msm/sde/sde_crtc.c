@@ -927,7 +927,7 @@ static ssize_t measured_fps_show(struct device *device,
 	fps_int = (uint64_t) sde_crtc->fps_info.measured_fps;
 	fps_decimal = do_div(fps_int, 10);
 	return scnprintf(buf, PAGE_SIZE,
-	"fps: %lld.%lld duration:%d frame_count:%llu\n", fps_int, fps_decimal,
+	"fps: %d.%d duration:%d frame_count:%llu\n", fps_int, fps_decimal,
 			sde_crtc->fps_info.fps_periodic_duration, frame_count);
 }
 
@@ -1012,26 +1012,6 @@ static bool sde_crtc_mode_fixup(struct drm_crtc *crtc,
 	}
 
 	return true;
-}
-
-static int _sde_crtc_get_ctlstart_timeout(struct drm_crtc *crtc)
-{
-	struct drm_encoder *encoder;
-	int rc = 0;
-
-	if (!crtc || !crtc->dev)
-		return 0;
-
-	list_for_each_entry(encoder,
-			&crtc->dev->mode_config.encoder_list, head) {
-		if (encoder->crtc != crtc)
-			continue;
-
-		if (sde_encoder_get_intf_mode(encoder) == INTF_MODE_CMD)
-			rc += sde_encoder_get_ctlstart_timeout_state(encoder);
-	}
-
-	return rc;
 }
 
 static void _sde_crtc_setup_blend_cfg(struct sde_crtc_mixer *mixer,
@@ -1335,9 +1315,6 @@ static int _sde_crtc_set_crtc_roi(struct drm_crtc *crtc,
 			return -EINVAL;
 		}
 
-		if (!mode_info.roi_caps.enabled)
-			continue;
-
 		sde_conn = to_sde_connector(conn_state->connector);
 		sde_conn_state = to_sde_connector_state(conn_state);
 
@@ -1346,6 +1323,9 @@ static int _sde_crtc_set_crtc_roi(struct drm_crtc *crtc,
 						&sde_conn->property_info,
 						&sde_conn_state->property_state,
 						CONNECTOR_PROP_ROI_V1);
+
+		if (!mode_info.roi_caps.enabled)
+			continue;
 
 		/*
 		 * current driver only supports same connector and crtc size,
@@ -2503,8 +2483,8 @@ int sde_crtc_get_secure_transition_ops(struct drm_crtc *crtc,
 		if (encoder->crtc != crtc)
 			continue;
 
-		post_commit |= sde_encoder_check_mode(encoder,
-						MSM_DISPLAY_CAP_VID_MODE);
+		post_commit |= sde_encoder_check_curr_mode(encoder,
+						MSM_DISPLAY_VIDEO_MODE);
 	}
 
 	SDE_DEBUG("crtc%d: secure_level %d old_valid_fb %d post_commit %d\n",
@@ -2898,7 +2878,7 @@ void sde_crtc_prepare_commit(struct drm_crtc *crtc,
 	struct sde_crtc_state *cstate;
 	struct drm_connector *conn;
 	struct drm_encoder *encoder;
-	int i;
+	struct drm_connector_list_iter conn_iter;
 
 	if (!crtc || !crtc->state) {
 		SDE_ERROR("invalid crtc\n");
@@ -2912,16 +2892,24 @@ void sde_crtc_prepare_commit(struct drm_crtc *crtc,
 
 	SDE_ATRACE_BEGIN("sde_crtc_prepare_commit");
 
-	for (i = 0; i < cstate->num_connectors; i++) {
-		conn = cstate->connectors[i];
-		encoder = conn->state->best_encoder;
-		if (encoder)
-			sde_encoder_register_frame_event_callback(
-					encoder,
-					sde_crtc_frame_event_cb,
-					crtc);
-		sde_connector_prepare_fence(conn);
-	}
+	/* identify connectors attached to this crtc */
+	cstate->num_connectors = 0;
+
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	drm_for_each_connector_iter(conn, &conn_iter)
+		if (conn->state && conn->state->crtc == crtc &&
+				cstate->num_connectors < MAX_CONNECTORS) {
+			encoder = conn->state->best_encoder;
+			if (encoder)
+				sde_encoder_register_frame_event_callback(
+						encoder,
+						sde_crtc_frame_event_cb,
+						crtc);
+
+			cstate->connectors[cstate->num_connectors++] = conn;
+			sde_connector_prepare_fence(conn);
+		}
+	drm_connector_list_iter_end(&conn_iter);
 
 	/* prepare main output fence */
 	sde_fence_prepare(sde_crtc->output_fence);
@@ -3943,9 +3931,9 @@ static void sde_crtc_atomic_begin(struct drm_crtc *crtc,
 		return;
 	}
 
-	if (!crtc->state->active) {
-		SDE_DEBUG("crtc%d -> active %d, skip atomic_begin\n",
-				crtc->base.id, crtc->state->active);
+	if (!crtc->state->enable) {
+		SDE_DEBUG("crtc%d -> enable %d, skip atomic_begin\n",
+				crtc->base.id, crtc->state->enable);
 		return;
 	}
 
@@ -3986,18 +3974,12 @@ static void sde_crtc_atomic_begin(struct drm_crtc *crtc,
 	if (unlikely(!sde_crtc->num_mixers))
 		goto end;
 
-	if (_sde_crtc_get_ctlstart_timeout(crtc)) {
-		_sde_crtc_blend_setup(crtc, old_state, false);
-		SDE_ERROR("border fill only commit after ctlstart timeout\n");
-	} else {
-		_sde_crtc_blend_setup(crtc, old_state, true);
-	}
-
+	_sde_crtc_blend_setup(crtc, old_state, true);
 	_sde_crtc_dest_scaler_setup(crtc);
 
 	/* cancel the idle notify delayed work */
-	if (sde_encoder_check_mode(sde_crtc->mixers[0].encoder,
-					MSM_DISPLAY_CAP_VID_MODE) &&
+	if (sde_encoder_check_curr_mode(sde_crtc->mixers[0].encoder,
+					MSM_DISPLAY_VIDEO_MODE) &&
 		kthread_cancel_delayed_work_sync(&sde_crtc->idle_notify_work))
 		SDE_DEBUG("idle notify work cancelled\n");
 
@@ -4105,8 +4087,8 @@ static void sde_crtc_atomic_flush(struct drm_crtc *crtc,
 	_sde_crtc_wait_for_fences(crtc);
 
 	/* schedule the idle notify delayed work */
-	if (idle_time && sde_encoder_check_mode(sde_crtc->mixers[0].encoder,
-						MSM_DISPLAY_CAP_VID_MODE)) {
+	if (sde_encoder_check_curr_mode(sde_crtc->mixers[0].encoder,
+				MSM_DISPLAY_VIDEO_MODE) && idle_time) {
 		kthread_queue_delayed_work(&event_thread->worker,
 					&sde_crtc->idle_notify_work,
 					msecs_to_jiffies(idle_time));
@@ -4318,14 +4300,13 @@ static void _sde_crtc_remove_pipe_flush(struct drm_crtc *crtc)
 }
 
 /**
- * _sde_crtc_reset_hw - attempt hardware reset on errors
+ * sde_crtc_reset_hw - attempt hardware reset on errors
  * @crtc: Pointer to DRM crtc instance
  * @old_state: Pointer to crtc state for previous commit
  * @recovery_events: Whether or not recovery events are enabled
  * Returns: Zero if current commit should still be attempted
  */
-static int _sde_crtc_reset_hw(struct drm_crtc *crtc,
-		struct drm_crtc_state *old_state,
+int sde_crtc_reset_hw(struct drm_crtc *crtc, struct drm_crtc_state *old_state,
 		bool recovery_events)
 {
 	struct drm_plane *plane_halt[MAX_PLANES];
@@ -4523,9 +4504,10 @@ void sde_crtc_commit_kickoff(struct drm_crtc *crtc,
 	struct msm_drm_private *priv;
 	struct sde_kms *sde_kms;
 	struct sde_crtc_state *cstate;
-	bool is_error, reset_req, recovery_events;
+	bool is_error, reset_req;
 	unsigned long flags;
 	enum sde_crtc_idle_pc_state idle_pc_state;
+	struct sde_encoder_kickoff_params params = { 0 };
 
 	if (!crtc) {
 		SDE_ERROR("invalid argument\n");
@@ -4559,7 +4541,6 @@ void sde_crtc_commit_kickoff(struct drm_crtc *crtc,
 	idle_pc_state = sde_crtc_get_property(cstate, CRTC_PROP_IDLE_PC_STATE);
 
 	list_for_each_entry(encoder, &dev->mode_config.encoder_list, head) {
-		struct sde_encoder_kickoff_params params = { 0 };
 
 		if (encoder->crtc != crtc)
 			continue;
@@ -4574,9 +4555,6 @@ void sde_crtc_commit_kickoff(struct drm_crtc *crtc,
 		if (sde_encoder_prepare_for_kickoff(encoder, &params))
 			reset_req = true;
 
-		recovery_events =
-			sde_encoder_recovery_events_enabled(encoder);
-
 		if (idle_pc_state != IDLE_PC_NONE)
 			sde_encoder_control_idle_pc(encoder,
 			    (idle_pc_state == IDLE_PC_ENABLE) ? true : false);
@@ -4587,7 +4565,11 @@ void sde_crtc_commit_kickoff(struct drm_crtc *crtc,
 	 * preparing for the kickoff
 	 */
 	if (reset_req) {
-		if (_sde_crtc_reset_hw(crtc, old_state, recovery_events))
+		sde_crtc->frame_trigger_mode = params.frame_trigger_mode;
+		if (sde_crtc->frame_trigger_mode
+					!= FRAME_DONE_WAIT_POSTED_START &&
+					sde_crtc_reset_hw(crtc, old_state,
+					params.recovery_events_enabled))
 			is_error = true;
 	}
 
@@ -5440,8 +5422,8 @@ static int _sde_crtc_check_secure_state(struct drm_crtc *crtc,
 		if (encoder->crtc != crtc)
 			continue;
 
-		is_video_mode |= sde_encoder_check_mode(encoder,
-						MSM_DISPLAY_CAP_VID_MODE);
+		is_video_mode |= sde_encoder_check_curr_mode(encoder,
+						MSM_DISPLAY_VIDEO_MODE);
 	}
 
 	sde_crtc = to_sde_crtc(crtc);
@@ -6212,8 +6194,6 @@ static int _sde_crtc_get_output_fence(struct drm_crtc *crtc,
 	uint32_t offset, i;
 	struct drm_connector_state *old_conn_state, *new_conn_state;
 	struct drm_connector *conn;
-	struct sde_connector *sde_conn = NULL;
-	struct msm_display_info disp_info;
 	bool is_vid = false;
 	struct drm_encoder *encoder;
 
@@ -6221,8 +6201,9 @@ static int _sde_crtc_get_output_fence(struct drm_crtc *crtc,
 	cstate = to_sde_crtc_state(state);
 
 	drm_for_each_encoder_mask(encoder, crtc->dev, state->encoder_mask) {
-		is_vid |= sde_encoder_check_mode(encoder,
-						MSM_DISPLAY_CAP_VID_MODE);
+		if (sde_encoder_check_curr_mode(encoder,
+			MSM_DISPLAY_VIDEO_MODE))
+			is_vid = true;
 		if (is_vid)
 			break;
 	}
@@ -6238,15 +6219,11 @@ static int _sde_crtc_get_output_fence(struct drm_crtc *crtc,
 			if (!new_conn_state || new_conn_state->crtc != crtc)
 				continue;
 
-			sde_conn = to_sde_connector(new_conn_state->connector);
-			if (sde_conn->display && sde_conn->ops.get_info) {
-				sde_conn->ops.get_info(conn, &disp_info,
-							sde_conn->display);
-				is_vid |= disp_info.capabilities &
-						MSM_DISPLAY_CAP_VID_MODE;
-				if (is_vid)
-					break;
-			}
+			if (sde_encoder_check_curr_mode(encoder,
+				MSM_DISPLAY_VIDEO_MODE))
+				is_vid = true;
+			if (is_vid)
+				break;
 		}
 	}
 

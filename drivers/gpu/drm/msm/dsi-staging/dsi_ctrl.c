@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -840,20 +840,24 @@ int dsi_ctrl_pixel_format_to_bpp(enum dsi_pixel_format dst_format)
 }
 
 static int dsi_ctrl_update_link_freqs(struct dsi_ctrl *dsi_ctrl,
-	struct dsi_host_config *config, void *clk_handle)
+	struct dsi_host_config *config, void *clk_handle,
+	struct dsi_display_mode *mode)
 {
 	int rc = 0;
 	u32 num_of_lanes = 0;
-	u32 bpp, byte_intf_clk_div;
-	u64 refresh_rate = TICKS_IN_MICRO_SECOND;
+	u32 bpp, frame_time_us, byte_intf_clk_div;
 	u64 h_period, v_period, bit_rate, pclk_rate, bit_rate_per_lane,
-	    byte_clk_rate, byte_intf_clk_rate;
+				byte_clk_rate, byte_intf_clk_rate;
 	struct dsi_host_common_cfg *host_cfg = &config->common_config;
 	struct dsi_split_link_config *split_link = &host_cfg->split_link;
 	struct dsi_mode_info *timing = &config->video_timing;
+	u32 bits_per_symbol = 16, num_of_symbols = 7; /* For Cphy */
+	u64 dsi_transfer_time_us = mode->priv_info->dsi_transfer_time_us;
+	u64 min_dsi_clk_hz = mode->priv_info->min_dsi_clk_hz;
 
-	/* Get bits per pxl in desitnation format */
+	/* Get bits per pxl in desitination format */
 	bpp = dsi_ctrl_pixel_format_to_bpp(host_cfg->dst_format);
+	frame_time_us = mult_frac(1000, 1000, (timing->refresh_rate));
 
 	if (host_cfg->data_lanes & DSI_DATA_LANE_0)
 		num_of_lanes++;
@@ -867,45 +871,54 @@ static int dsi_ctrl_update_link_freqs(struct dsi_ctrl *dsi_ctrl,
 	if (split_link->split_link_enabled)
 		num_of_lanes = split_link->lanes_per_sublink;
 
-	if (config->bit_clk_rate_hz_override == 0) {
-		if (config->panel_mode == DSI_OP_CMD_MODE) {
-			h_period = DSI_H_ACTIVE_DSC(timing);
-			h_period += timing->overlap_pixels;
-			v_period = timing->v_active;
+	config->common_config.num_data_lanes = num_of_lanes;
+	config->common_config.bpp = bpp;
 
-			do_div(refresh_rate, timing->mdp_transfer_time_us);
-		} else {
-			h_period = DSI_H_TOTAL_DSC(timing);
-			v_period = DSI_V_TOTAL(timing);
-			refresh_rate = timing->refresh_rate;
-		}
-		bit_rate = h_period * v_period * refresh_rate * bpp;
-	} else {
+	if (config->bit_clk_rate_hz_override != 0) {
 		bit_rate = config->bit_clk_rate_hz_override * num_of_lanes;
+	} else if (config->panel_mode == DSI_OP_CMD_MODE) {
+		/* Calculate the bit rate needed to match dsi transfer time */
+		bit_rate = min_dsi_clk_hz * frame_time_us;
+		do_div(bit_rate, dsi_transfer_time_us);
+		bit_rate = bit_rate * num_of_lanes;
+	} else {
+		h_period = DSI_H_TOTAL_DSC(timing);
+		v_period = DSI_V_TOTAL(timing);
+		bit_rate = h_period * v_period * timing->refresh_rate * bpp;
 	}
 
-	bit_rate_per_lane = bit_rate;
-	do_div(bit_rate_per_lane, num_of_lanes);
 	pclk_rate = bit_rate;
 	do_div(pclk_rate, bpp);
-	byte_clk_rate = bit_rate_per_lane;
-	do_div(byte_clk_rate, 8);
-	byte_intf_clk_rate = byte_clk_rate;
-	byte_intf_clk_div = host_cfg->byte_intf_clk_div;
-	do_div(byte_intf_clk_rate, byte_intf_clk_div);
-
+	if (host_cfg->phy_type == DSI_PHY_TYPE_DPHY) {
+		bit_rate_per_lane = bit_rate;
+		do_div(bit_rate_per_lane, num_of_lanes);
+		byte_clk_rate = bit_rate_per_lane;
+		do_div(byte_clk_rate, 8);
+		byte_intf_clk_rate = byte_clk_rate;
+		byte_intf_clk_div = host_cfg->byte_intf_clk_div;
+		do_div(byte_intf_clk_rate, byte_intf_clk_div);
+		config->bit_clk_rate_hz = byte_clk_rate * 8;
+	} else {
+		do_div(bit_rate, bits_per_symbol);
+		bit_rate *= num_of_symbols;
+		bit_rate_per_lane = bit_rate;
+		do_div(bit_rate_per_lane, num_of_lanes);
+		byte_clk_rate = bit_rate_per_lane;
+		do_div(byte_clk_rate, 7);
+		/* For CPHY, byte_intf_clk is same as byte_clk */
+		byte_intf_clk_rate = byte_clk_rate;
+		config->bit_clk_rate_hz = byte_clk_rate * 7;
+	}
 	pr_debug("bit_clk_rate = %llu, bit_clk_rate_per_lane = %llu\n",
 		 bit_rate, bit_rate_per_lane);
-	pr_debug("bit_clk_rate = %llu, byte_intf_clk_rate = %llu\n",
-		 bit_rate, byte_intf_clk_rate);
-	pr_debug("byte_clk_rate = %llu, pclk_rate = %llu\n",
-		  byte_clk_rate, pclk_rate);
+	pr_debug("byte_clk_rate = %llu, byte_intf_clk_rate = %llu\n",
+		  byte_clk_rate, byte_intf_clk_rate);
+	pr_debug("pclk_rate = %llu\n", pclk_rate);
 
 	dsi_ctrl->clk_freq.byte_clk_rate = byte_clk_rate;
+	dsi_ctrl->clk_freq.byte_intf_clk_rate = byte_intf_clk_rate;
 	dsi_ctrl->clk_freq.pix_clk_rate = pclk_rate;
 	dsi_ctrl->clk_freq.esc_clk_rate = config->esc_clk_rate_hz;
-	dsi_ctrl->clk_freq.byte_intf_clk_rate = byte_intf_clk_rate;
-	config->bit_clk_rate_hz = dsi_ctrl->clk_freq.byte_clk_rate * 8;
 
 	rc = dsi_clk_set_link_frequencies(clk_handle, dsi_ctrl->clk_freq,
 					dsi_ctrl->cell_index);
@@ -1148,7 +1161,7 @@ static int dsi_message_tx(struct dsi_ctrl *dsi_ctrl,
 		goto error;
 	}
 
-	pr_debug("cmd tx type=%02x cmd=%02x len=%ld last=%d\n", msg->type,
+	pr_debug("cmd tx type=%02x cmd=%02x len=%d last=%d\n", msg->type,
 		 msg->tx_len ? *((u8 *)msg->tx_buf) : 0, msg->tx_len,
 		 (msg->flags & MIPI_DSI_MSG_LASTCOMMAND) != 0);
 
@@ -1736,7 +1749,7 @@ static int dsi_enable_io_clamp(struct dsi_ctrl *dsi_ctrl,
 static int dsi_ctrl_dts_parse(struct dsi_ctrl *dsi_ctrl,
 				  struct device_node *of_node)
 {
-	u32 index = 0;
+	u32 index = 0, frame_threshold_time_us = 0;
 	int rc = 0;
 
 	if (!dsi_ctrl || !of_node) {
@@ -1764,6 +1777,15 @@ static int dsi_ctrl_dts_parse(struct dsi_ctrl *dsi_ctrl,
 
 	dsi_ctrl->split_link_supported = of_property_read_bool(of_node,
 					"qcom,split-link-supported");
+
+	rc = of_property_read_u32(of_node, "frame-threshold-time-us",
+			&frame_threshold_time_us);
+	if (rc) {
+		pr_debug("frame-threshold-time not specified, defaulting\n");
+		frame_threshold_time_us = 2666;
+	}
+
+	dsi_ctrl->frame_threshold_time_us = frame_threshold_time_us;
 
 	return 0;
 }
@@ -2918,6 +2940,7 @@ error:
  * dsi_ctrl_update_host_config() - update dsi host configuration
  * @dsi_ctrl:          DSI controller handle.
  * @config:            DSI host configuration.
+ * @mode:              DSI host mode selected.
  * @flags:             dsi_mode_flags modifying the behavior
  *
  * Updates driver with new Host configuration to use for host initialization.
@@ -2928,6 +2951,7 @@ error:
  */
 int dsi_ctrl_update_host_config(struct dsi_ctrl *ctrl,
 				struct dsi_host_config *config,
+				struct dsi_display_mode *mode,
 				int flags, void *clk_handle)
 {
 	int rc = 0;
@@ -2951,7 +2975,8 @@ int dsi_ctrl_update_host_config(struct dsi_ctrl *ctrl,
 		 * for dynamic clk switch case link frequence would
 		 * be updated dsi_display_dynamic_clk_switch().
 		 */
-		rc = dsi_ctrl_update_link_freqs(ctrl, config, clk_handle);
+		rc = dsi_ctrl_update_link_freqs(ctrl, config, clk_handle,
+				mode);
 		if (rc) {
 			pr_err("[%s] failed to update link frequencies, rc=%d\n",
 			       ctrl->name, rc);

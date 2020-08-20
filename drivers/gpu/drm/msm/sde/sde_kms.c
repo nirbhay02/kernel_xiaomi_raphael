@@ -1225,6 +1225,7 @@ static void sde_kms_wait_for_commit_done(struct msm_kms *kms,
 		ret = sde_encoder_wait_for_event(encoder, MSM_ENC_COMMIT_DONE);
 		if (ret && ret != -EWOULDBLOCK) {
 			SDE_ERROR("wait for commit done returned %d\n", ret);
+			sde_crtc_request_frame_reset(crtc);
 			break;
 		}
 
@@ -1239,7 +1240,7 @@ static void sde_kms_prepare_fence(struct msm_kms *kms,
 {
 	struct drm_crtc *crtc;
 	struct drm_crtc_state *old_crtc_state;
-	int i;
+	int i, rc;
 
 	if (!kms || !old_state || !old_state->dev || !old_state->acquire_ctx) {
 		SDE_ERROR("invalid argument(s)\n");
@@ -1247,6 +1248,15 @@ static void sde_kms_prepare_fence(struct msm_kms *kms,
 	}
 
 	SDE_ATRACE_BEGIN("sde_kms_prepare_fence");
+retry:
+	/* attempt to acquire ww mutex for connection */
+	rc = drm_modeset_lock(&old_state->dev->mode_config.connection_mutex,
+			       old_state->acquire_ctx);
+
+	if (rc == -EDEADLK) {
+		drm_modeset_backoff(old_state->acquire_ctx);
+		goto retry;
+	}
 
 	/* old_state actually contains updated crtc pointers */
 	for_each_crtc_in_state(old_state, crtc, old_crtc_state, i) {
@@ -2761,14 +2771,9 @@ retry:
 	}
 
 	crtc_state->active = true;
-	ret = drm_atomic_set_crtc_for_connector(conn_state, enc->crtc);
-	if (ret)
-		SDE_ERROR("error %d setting the crtc\n", ret);
+	drm_atomic_set_crtc_for_connector(conn_state, enc->crtc);
 
-	ret = drm_atomic_commit(state);
-	if (ret)
-		SDE_ERROR("Error %d doing the atomic commit\n", ret);
-
+	drm_atomic_commit(state);
 end:
 	if (state)
 		drm_atomic_state_put(state);
@@ -3597,7 +3602,7 @@ static int sde_kms_hw_init(struct msm_kms *kms)
 	sde_kms->hw_sid = sde_hw_sid_init(sde_kms->sid,
 				sde_kms->sid_len, sde_kms->catalog);
 	if (IS_ERR(sde_kms->hw_sid)) {
-		SDE_ERROR("failed to init sid %ld\n", PTR_ERR(sde_kms->hw_sid));
+		SDE_ERROR("failed to init sid %d\n", PTR_ERR(sde_kms->hw_sid));
 		sde_kms->hw_sid = NULL;
 		goto power_error;
 	}
