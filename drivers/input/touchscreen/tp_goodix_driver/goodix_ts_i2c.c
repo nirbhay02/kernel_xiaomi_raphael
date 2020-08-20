@@ -3,7 +3,7 @@
  * Hardware interface layer of touchdriver architecture.
  *
  * Copyright (C) 2015 - 2016 Goodix, Inc.
- * Copyright (C) 2019 XiaoMi, Inc.
+ * Copyright (C) 2020 XiaoMi, Inc.
  * Authors:  Yulong Cai <caiyulong@goodix.com>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -28,6 +28,7 @@
 #include "goodix_cfg_bin.h"
 #include <linux/input/mt.h>
 #include <linux/input.h>
+#include "../xiaomi/xiaomi_touch.h"
 
 #define TS_DT_COMPATIBLE "goodix,gt9889"
 #define TS_DRIVER_NAME "goodix_i2c"
@@ -516,7 +517,7 @@ int goodix_set_i2c_doze_mode(struct goodix_ts_device *dev, int enable)
 
 	if (enable) {
 		if (dev->doze_mode_set_count != 0)
-			dev->doze_mode_set_count--;
+			dev->doze_mode_set_count--;			
 
 		/*when count equal 0, allow ic enter doze mode*/
 		if (dev->doze_mode_set_count == 0) {
@@ -628,9 +629,9 @@ int goodix_i2c_read(struct goodix_ts_device *dev, unsigned int reg,
 			ts_err("gtx8 i2c read:0x%04x ERROR, disable doze mode FAILED",
 					reg);
 	}
-
+	
 	r = goodix_i2c_read_trans(dev, reg, data, len);
-
+	
 	if (dev->ic_type == IC_TYPE_NORMANDY) {
 		if (goodix_set_i2c_doze_mode(dev, true) != 0)
 			ts_err("gtx8 i2c read:0x%04x ERROR, enable doze mode FAILED",
@@ -641,7 +642,7 @@ int goodix_i2c_read(struct goodix_ts_device *dev, unsigned int reg,
 }
 
 /**
- * goodix_i2c_write_trans_once -
+ * goodix_i2c_write_trans_once - 
  * write device register through i2c bus, no retry
  * @dev: pointer to device data
  * @addr: register address
@@ -1500,7 +1501,7 @@ static int goodix_hw_init(struct goodix_ts_device *ts_dev)
 			ts_dev->chip_version.sensor_id);
 	if (r < 0)
 		ts_info("Cann't find customized parameters");
-
+	
 	ts_dev->normal_cfg->delay = 500;
 	/* send normal-cfg to firmware */
 	r = goodix_send_config(ts_dev, ts_dev->normal_cfg);
@@ -1735,7 +1736,7 @@ static int goodix_remap_trace_id(struct goodix_ts_device *dev,
 			}
 			offset += BYTES_PER_COORD;
 		}
-
+	
 	}
 
 	/*for (i = 0; i < touch_num; i++) {
@@ -1953,7 +1954,7 @@ static int goodix_event_handler(struct goodix_ts_device *dev,
 	unsigned char event_sta;
 	struct i2c_client *client = to_i2c_client(dev->dev);
 	struct goodix_ts_core *core_data = i2c_get_clientdata(client);
-	int r;
+	int r, ispalm = 0;
 
 	memset(pre_buf, 0, sizeof(pre_buf));
 
@@ -1965,7 +1966,16 @@ static int goodix_event_handler(struct goodix_ts_device *dev,
 	/* buffer[0]: event state */
 	core_data->event_status = pre_buf[0];
 	event_sta = pre_buf[0];
-
+	ispalm = pre_buf[1] & 0x20;
+#ifdef CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE
+	if (core_data->palm_sensor_switch) {
+		if (ispalm)
+			update_palm_sensor_value(1);
+		else
+			update_palm_sensor_value(0);
+		ts_info("palm event:%d", !!ispalm);
+	}
+#endif
 	if (likely((event_sta & GOODIX_TOUCH_EVENT) == GOODIX_TOUCH_EVENT)) {
 		/*handle touch event*/
 		goodix_touch_handler(dev,
@@ -1984,7 +1994,7 @@ static int goodix_event_handler(struct goodix_ts_device *dev,
 		/* handle hotknot event */
 		ts_info("Hotknot event");
 	} else {
-		ts_info("unknow event type");
+		ts_info("unknow event type:%02x", event_sta);
 		r = -EINVAL;
 	}
 
